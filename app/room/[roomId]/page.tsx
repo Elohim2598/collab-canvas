@@ -5,31 +5,68 @@ import { useParams } from 'next/navigation';
 import Canvas from '@/components/Canvas';
 import Toolbar from '@/components/Toolbar';
 import { useCanvasStore } from '@/store/useCanvasStore';
-import { v4 as uuidv4 } from 'uuid';
-import { Copy, Check, Heart } from 'lucide-react';
+import { Copy, Check } from 'lucide-react';
+import { getSocket } from '@/lib/socket';
+
+// ─── Random display name generator ───
+const ADJECTIVES = ['Swift', 'Bright', 'Calm', 'Bold', 'Keen', 'Warm', 'Cool', 'Wild'];
+const ANIMALS = ['Fox', 'Owl', 'Bear', 'Wolf', 'Hawk', 'Lynx', 'Puma', 'Deer'];
+
+function generateDisplayName(): string {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
+  return `${adj} ${animal}`;
+}
+
+const USER_COLORS = ['#EF4444', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899'];
 
 export default function RoomPage() {
   const params = useParams();
   const roomId = params.roomId as string;
   const [mounted, setMounted] = useState(false);
   const [copied, setCopied] = useState(false);
-  const { setCurrentUser } = useCanvasStore();
+  const { setCurrentUser, currentUser } = useCanvasStore();
 
   useEffect(() => {
     setMounted(true);
-    
-    // Generate random user color
-    const colors = ['#EF4444', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899'];
-    const randomColor = colors[Math.floor(Math.random() * colors.length)];
-    
-    // Set current user
-    setCurrentUser({
-      id: uuidv4(),
-      name: 'Anonymous',
-      color: randomColor,
-      cursorX: 0,
-      cursorY: 0,
+
+    // Wait for socket connection to get the real socket.id,
+    // then use it as the user's id so cursor events match up.
+    const socket = getSocket();
+
+    const initUser = () => {
+      const color = USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
+      setCurrentUser({
+        id: socket.id!, // Use socket.id so server cursor broadcasts match
+        name: generateDisplayName(),
+        color,
+        cursorX: 0,
+        cursorY: 0,
+      });
+    };
+
+    if (socket.connected) {
+      initUser();
+    } else {
+      socket.on('connect', initUser);
+    }
+
+    // Handle reconnections — re-register with new socket.id
+    socket.on('reconnect', () => {
+      const color = USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
+      setCurrentUser({
+        id: socket.id!,
+        name: currentUser?.name ?? generateDisplayName(),
+        color: currentUser?.color ?? color,
+        cursorX: 0,
+        cursorY: 0,
+      });
     });
+
+    return () => {
+      socket.off('connect', initUser);
+      socket.off('reconnect');
+    };
   }, [setCurrentUser]);
 
   const copyRoomId = () => {
@@ -46,7 +83,7 @@ export default function RoomPage() {
     <div className="relative w-full h-screen">
       <Toolbar />
       <Canvas />
-      
+
       {/* Room Info with Copy ID */}
       <div className="fixed bottom-6 left-6 z-10">
         <div className="bg-zinc-800/40 backdrop-blur-2xl rounded-xl shadow-2xl border border-zinc-700/50 px-4 py-3">

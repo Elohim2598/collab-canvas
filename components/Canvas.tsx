@@ -29,7 +29,7 @@ function createThrottle<T extends (...args: any[]) => void>(fn: T, ms: number): 
   }) as T;
 }
 
-// ─── Memoized shape renderer (pure component pattern) ───
+// ─── Memoized shape renderer ───
 const ShapeRenderer = ({
   shape,
   currentTool,
@@ -49,7 +49,7 @@ const ShapeRenderer = ({
       listening: isInteractive,
       perfectDrawEnabled: false,
       shadowForStrokeEnabled: false,
-      hitStrokeWidth: currentTool === 'eraser' ? 20 : 0, // Bigger hit area for eraser
+      hitStrokeWidth: currentTool === 'eraser' ? 20 : 0,
     }),
     [shape.id, currentTool, isInteractive, onSelect]
   );
@@ -127,7 +127,7 @@ const ShapeRenderer = ({
   }
 };
 
-// ─── Remote cursor component with smooth interpolation ───
+// ─── Remote cursor component ───
 const RemoteCursor = ({
   x,
   y,
@@ -140,7 +140,6 @@ const RemoteCursor = ({
   name: string;
 }) => (
   <Group x={x} y={y} listening={false} perfectDrawEnabled={false}>
-    {/* Cursor pointer SVG-like shape */}
     <Line
       points={[0, 0, 0, 16, 4, 12, 8, 20, 11, 19, 7, 11, 12, 11]}
       fill={color}
@@ -150,7 +149,6 @@ const RemoteCursor = ({
       listening={false}
       perfectDrawEnabled={false}
     />
-    {/* Name label */}
     <Rect
       x={14}
       y={10}
@@ -174,13 +172,13 @@ const RemoteCursor = ({
   </Group>
 );
 
-// ─── Custom hook: window dimensions with debounced resize ───
+// ─── Custom hook: window dimensions ───
 function useWindowSize() {
   const [size, setSize] = useState({ width: 1, height: 1 });
 
   useEffect(() => {
     const update = () => setSize({ width: window.innerWidth, height: window.innerHeight });
-    update(); // Set initial size after mount (SSR-safe)
+    update();
 
     let rafId: number;
     const handleResize = () => {
@@ -201,9 +199,17 @@ function useWindowSize() {
 // ═══════════════════════════════════════════════════════════
 // ─── MAIN CANVAS COMPONENT ───
 // ═══════════════════════════════════════════════════════════
+
+interface CursorData {
+  x: number;
+  y: number;
+  name: string;
+  color: string;
+}
+
 export default function Canvas() {
   const stageRef = useRef<any>(null);
-  const isDrawingRef = useRef(false); // Use ref for perf-critical drawing state
+  const isDrawingRef = useRef(false);
   const currentShapeRef = useRef<Shape | null>(null);
   const rafRef = useRef<number | null>(null);
 
@@ -213,9 +219,7 @@ export default function Canvas() {
   const [textValue, setTextValue] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [remoteCursors, setRemoteCursors] = useState<
-    Record<string, { x: number; y: number; user: User }>
-  >({});
+  const [remoteCursors, setRemoteCursors] = useState<Record<string, CursorData>>({});
 
   const params = useParams();
   const roomId = params?.roomId as string;
@@ -231,14 +235,13 @@ export default function Canvas() {
     setShapes,
   } = useCanvasStore();
 
-  // Stable reference for current tool (avoids stale closures)
   const currentToolRef = useRef(currentTool);
   useEffect(() => { currentToolRef.current = currentTool; }, [currentTool]);
 
   const selectedColorRef = useRef(selectedColor);
   useEffect(() => { selectedColorRef.current = selectedColor; }, [selectedColor]);
 
-  // ─── Throttled cursor emission (stable, no re-creation) ───
+  // ─── Throttled cursor emission ───
   const emitCursorMove = useRef(
     createThrottle((roomId: string, x: number, y: number) => {
       const socket = getSocket();
@@ -269,8 +272,8 @@ export default function Canvas() {
       setShapes([]);
     });
 
-    // Batch cursor updates with rAF to avoid excessive re-renders
-    let cursorBatch: Record<string, { userId: string; x: number; y: number }> = {};
+    // Batch cursor updates with rAF
+    let cursorBatch: Record<string, { userId: string; x: number; y: number; name: string; color: string }> = {};
     let cursorRaf: number | null = null;
 
     const flushCursors = () => {
@@ -281,25 +284,32 @@ export default function Canvas() {
       setRemoteCursors((prev) => {
         const next = { ...prev };
         for (const [userId, data] of Object.entries(batch)) {
-          const existing = next[userId];
           next[userId] = {
             x: data.x,
             y: data.y,
-            user: existing?.user ?? {
-              id: userId,
-              name: 'User',
-              color: '#3B82F6',
-              cursorX: data.x,
-              cursorY: data.y,
-            },
+            name: data.name,
+            color: data.color,
           };
         }
         return next;
       });
     };
 
-    const handleCursorMove = ({ userId, x, y }: { userId: string; x: number; y: number }) => {
-      cursorBatch[userId] = { userId, x, y };
+    // Server now sends name + color with every cursor event
+    const handleCursorMove = ({
+      userId,
+      x,
+      y,
+      name,
+      color,
+    }: {
+      userId: string;
+      x: number;
+      y: number;
+      name: string;
+      color: string;
+    }) => {
+      cursorBatch[userId] = { userId, x, y, name, color };
       if (!cursorRaf) {
         cursorRaf = requestAnimationFrame(flushCursors);
       }
@@ -308,11 +318,7 @@ export default function Canvas() {
     socket.on('cursor-move', handleCursorMove);
 
     socket.on('user-joined', (user: User) => {
-      // Update cursor with real user info when they join
-      setRemoteCursors((prev) => ({
-        ...prev,
-        [user.id]: { x: prev[user.id]?.x ?? 0, y: prev[user.id]?.y ?? 0, user },
-      }));
+      console.log('User joined:', user.name);
     });
 
     socket.on('user-left', (userId: string) => {
@@ -344,12 +350,11 @@ export default function Canvas() {
     return 'default';
   }, [currentTool, isDragging]);
 
-  // ─── Stable select handler ───
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id);
   }, []);
 
-  // ─── Mouse handlers using refs for zero-latency drawing ───
+  // ─── Mouse handlers ───
   const handleMouseDown = useCallback(
     (e: any) => {
       const tool = currentToolRef.current;
@@ -385,12 +390,9 @@ export default function Canvas() {
       const newShape: Shape = {
         id: uuidv4(),
         type:
-          tool === 'pen'
-            ? 'path'
-            : tool === 'rectangle'
-            ? 'rect'
-            : tool === 'circle'
-            ? 'circle'
+          tool === 'pen' ? 'path'
+            : tool === 'rectangle' ? 'rect'
+            : tool === 'circle' ? 'circle'
             : 'line',
         x: pos.x,
         y: pos.y,
@@ -401,10 +403,8 @@ export default function Canvas() {
 
       if (tool === 'pen') newShape.points = [0, 0];
       else if (tool === 'circle') newShape.radius = 0;
-      else if (tool === 'rectangle') {
-        newShape.width = 0;
-        newShape.height = 0;
-      } else if (tool === 'line') newShape.points = [0, 0, 0, 0];
+      else if (tool === 'rectangle') { newShape.width = 0; newShape.height = 0; }
+      else if (tool === 'line') newShape.points = [0, 0, 0, 0];
 
       isDrawingRef.current = true;
       currentShapeRef.current = newShape;
@@ -419,7 +419,6 @@ export default function Canvas() {
       const pos = stage.getPointerPosition();
       if (!pos) return;
 
-      // Emit cursor (throttled) only when not drawing
       if (!isDrawingRef.current) {
         emitCursorMove(roomId, pos.x, pos.y);
       }
@@ -429,35 +428,21 @@ export default function Canvas() {
       const tool = currentToolRef.current;
       const shape = currentShapeRef.current;
 
-      // Cancel any pending rAF to prevent stacking
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
 
-      // Use rAF to batch drawing updates at screen refresh rate
       rafRef.current = requestAnimationFrame(() => {
         let updated: Shape;
 
         if (tool === 'pen') {
           const points = shape.points || [];
-          updated = {
-            ...shape,
-            points: [...points, pos.x - shape.x, pos.y - shape.y],
-          };
+          updated = { ...shape, points: [...points, pos.x - shape.x, pos.y - shape.y] };
         } else if (tool === 'circle') {
-          const radius = Math.sqrt(
-            Math.pow(pos.x - shape.x, 2) + Math.pow(pos.y - shape.y, 2)
-          );
+          const radius = Math.sqrt(Math.pow(pos.x - shape.x, 2) + Math.pow(pos.y - shape.y, 2));
           updated = { ...shape, radius };
         } else if (tool === 'rectangle') {
-          updated = {
-            ...shape,
-            width: pos.x - shape.x,
-            height: pos.y - shape.y,
-          };
+          updated = { ...shape, width: pos.x - shape.x, height: pos.y - shape.y };
         } else if (tool === 'line') {
-          updated = {
-            ...shape,
-            points: [0, 0, pos.x - shape.x, pos.y - shape.y],
-          };
+          updated = { ...shape, points: [0, 0, pos.x - shape.x, pos.y - shape.y] };
         } else {
           return;
         }
@@ -521,13 +506,9 @@ export default function Canvas() {
     [handleTextSubmit]
   );
 
-  // ─── Memoized cursor entries ───
-  const cursorEntries = useMemo(
-    () => Object.entries(remoteCursors),
-    [remoteCursors]
-  );
+  const cursorEntries = useMemo(() => Object.entries(remoteCursors), [remoteCursors]);
 
-  // ─── Keyboard shortcuts (Delete selected shape) ───
+  // ─── Keyboard shortcuts ───
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId && currentTool === 'select') {
@@ -571,7 +552,6 @@ export default function Canvas() {
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
         >
-          {/* Committed shapes layer (stable, rarely re-renders) */}
           <Layer listening={currentTool === 'select' || currentTool === 'eraser'}>
             {shapes.map((shape) => (
               <ShapeRenderer
@@ -583,7 +563,6 @@ export default function Canvas() {
             ))}
           </Layer>
 
-          {/* Active drawing layer (re-renders during draw only) */}
           <Layer listening={false}>
             {currentShape && (
               <ShapeRenderer
@@ -594,15 +573,14 @@ export default function Canvas() {
             )}
           </Layer>
 
-          {/* Remote cursors layer (independent updates) */}
           <Layer listening={false}>
             {cursorEntries.map(([userId, cursor]) => (
               <RemoteCursor
                 key={userId}
                 x={cursor.x}
                 y={cursor.y}
-                color={cursor.user.color}
-                name={cursor.user.name}
+                color={cursor.color}
+                name={cursor.name}
               />
             ))}
           </Layer>
@@ -624,10 +602,7 @@ export default function Canvas() {
             onKeyDown={handleTextKeyDown}
             className="px-2 py-1 border-none outline-none min-w-[200px] bg-transparent text-white placeholder-zinc-500"
             style={{
-              color:
-                selectedColor === '#000000' || selectedColor === '#FFFFFF'
-                  ? '#FFFFFF'
-                  : selectedColor,
+              color: selectedColor === '#000000' || selectedColor === '#FFFFFF' ? '#FFFFFF' : selectedColor,
               fontSize: '24px',
             }}
             placeholder="Type here..."
